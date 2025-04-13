@@ -37,6 +37,7 @@
 
 #define     CONFSTR_VM_REFRESH_INTERVAL       "playback_status.refresh_interval"
 #define     CONFSTR_VM_NUM_LINES              "playback_status.num_lines"
+#define     CONFSTR_VM_PANGO_ATTRS            "playback_status.pango_attrs."
 #define     CONFSTR_VM_FORMAT                 "playback_status.format."
 
 /* Global variables */
@@ -50,6 +51,7 @@ typedef struct {
     GtkWidget *popup;
     GtkWidget *popup_item;
     cairo_surface_t *surf;
+    char *pango_attrs[MAX_LINES];
     char *bytecode[MAX_LINES];
     guint drawtimer;
     intptr_t mutex;
@@ -57,6 +59,7 @@ typedef struct {
 
 static int CONFIG_REFRESH_INTERVAL = 100;
 static int CONFIG_NUM_LINES = 3;
+static const gchar *CONFIG_PANGO_ATTRS[MAX_LINES];
 static const gchar *CONFIG_FORMAT[MAX_LINES];
 
 static void
@@ -64,8 +67,12 @@ save_config (void)
 {
     deadbeef->conf_set_int (CONFSTR_VM_REFRESH_INTERVAL,            CONFIG_REFRESH_INTERVAL);
     deadbeef->conf_set_int (CONFSTR_VM_NUM_LINES,            CONFIG_NUM_LINES);
+    char conf_pango_attrs_str[100];
     char conf_format_str[100];
     for (int i = 0; i < CONFIG_NUM_LINES; i++) {
+        snprintf (conf_pango_attrs_str, sizeof (conf_pango_attrs_str), "%s%02d", CONFSTR_VM_PANGO_ATTRS, i);
+        deadbeef->conf_set_str (conf_pango_attrs_str, CONFIG_PANGO_ATTRS[i]);
+
         snprintf (conf_format_str, sizeof (conf_format_str), "%s%02d", CONFSTR_VM_FORMAT, i);
         deadbeef->conf_set_str (conf_format_str, CONFIG_FORMAT[i]);
     }
@@ -78,6 +85,8 @@ load_config (gpointer user_data)
     w_playback_status_t *w = user_data;
     deadbeef->mutex_lock (w->mutex);
     for (int i = 0; i < MAX_LINES; i++) {
+        if (CONFIG_PANGO_ATTRS[i])
+            g_free ((gchar *)CONFIG_PANGO_ATTRS[i]);
         if (CONFIG_FORMAT[i])
             g_free ((gchar *)CONFIG_FORMAT[i]);
     }
@@ -85,19 +94,25 @@ load_config (gpointer user_data)
     CONFIG_REFRESH_INTERVAL = deadbeef->conf_get_int (CONFSTR_VM_REFRESH_INTERVAL,          100);
     CONFIG_NUM_LINES = deadbeef->conf_get_int (CONFSTR_VM_NUM_LINES,          3);
 
+    char conf_pango_attrs_str[1024];
     char conf_format_str[1024];
     for (int i = 0; i < CONFIG_NUM_LINES; i++) {
+        snprintf (conf_pango_attrs_str, sizeof (conf_pango_attrs_str), "%s%02d", CONFSTR_VM_PANGO_ATTRS, i);
         snprintf (conf_format_str, sizeof (conf_format_str), "%s%02d", CONFSTR_VM_FORMAT, i);
         if (i == 0) {
-            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "<span foreground='grey' weight='bold' size='medium'>%playback_time% / %length%</span>"));
+            CONFIG_PANGO_ATTRS[i] = strdup (deadbeef->conf_get_str_fast (conf_pango_attrs_str, "foreground='grey' weight='bold' size='medium'"));
+            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "%playback_time% / %length%"));
         }
         else if (i == 1) {
-            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "<span weight='bold' size='x-large'>%tracknumber%. %title%</span>"));
+            CONFIG_PANGO_ATTRS[i] = strdup (deadbeef->conf_get_str_fast (conf_pango_attrs_str, "weight='bold' size='x-large'"));
+            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "%tracknumber%. %title%"));
         }
         else if (i== 2) {
-            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "%album% - <i>%album artist%</i>"));
+            CONFIG_PANGO_ATTRS[i] = strdup (deadbeef->conf_get_str_fast (conf_pango_attrs_str, ""));
+            CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, "%album% - %album artist%"));
         }
         else {
+            CONFIG_PANGO_ATTRS[i] = strdup (deadbeef->conf_get_str_fast (conf_pango_attrs_str, ""));
             CONFIG_FORMAT[i] = strdup (deadbeef->conf_get_str_fast (conf_format_str, ""));
         }
     }
@@ -106,29 +121,10 @@ load_config (gpointer user_data)
     deadbeef->mutex_unlock (w->mutex);
 }
 
-static void
-playback_status_escape_tf (const char *src, int src_len, char *dst, int dst_len)
-{
-    int j = 0;
-
-    for (int i = 0; i < src_len && src[i] && j < dst_len-1; i++) {
-        if (src[i] == '<' || src[i] == '>') {
-            dst[j++] = '\'';
-            dst[j++] = src[i];
-            dst[j++] = '\'';
-        } else {
-            dst[j++] = src[i];
-        }
-    }
-
-    dst[j] = 0;
-}
-
 static int
 on_config_changed (gpointer user_data, uintptr_t ctx)
 {
     w_playback_status_t *w = user_data;
-    char format_escaped[1024];
     load_config (user_data);
     for (int i = 0; i < MAX_LINES; i++) {
         if (w->bytecode[i]) {
@@ -137,8 +133,7 @@ on_config_changed (gpointer user_data, uintptr_t ctx)
         }
         if (i < CONFIG_NUM_LINES) {
             gtk_widget_show (w->label[i]);
-            playback_status_escape_tf (CONFIG_FORMAT[i], strlen(CONFIG_FORMAT[i]), format_escaped, sizeof(format_escaped));
-            w->bytecode[i] = deadbeef->tf_compile (format_escaped);
+            w->bytecode[i] = deadbeef->tf_compile (CONFIG_FORMAT[i]);
         }
         else {
             gtk_widget_hide (w->label[i]);
@@ -147,6 +142,7 @@ on_config_changed (gpointer user_data, uintptr_t ctx)
     return 0;
 }
 
+static GtkWidget *pango_attrs[MAX_LINES];
 static GtkWidget *format[MAX_LINES];
 
 static gboolean
@@ -155,9 +151,11 @@ on_num_lines_changed (GtkSpinButton *spin, gpointer user_data)
     int value = gtk_spin_button_get_value_as_int (spin);
     for (int i = 0; i < MAX_LINES; i++) {
         if (i < value) {
+            gtk_widget_show (pango_attrs[i]);
             gtk_widget_show (format[i]);
         }
         else {
+            gtk_widget_hide (pango_attrs[i]);
             gtk_widget_hide (format[i]);
         }
     }
@@ -171,6 +169,7 @@ on_button_config (GtkMenuItem *menuitem, gpointer user_data)
     GtkWidget *config_dialog;
     GtkWidget *hbox01;
     GtkWidget *vbox01;
+    GtkWidget *hbox02;
     GtkWidget *num_lines;
     GtkWidget *dialog_action_area13;
     GtkWidget *applybutton1;
@@ -181,7 +180,7 @@ on_button_config (GtkMenuItem *menuitem, gpointer user_data)
     playback_status_properties = gtk_dialog_new ();
     gtk_window_set_title (GTK_WINDOW (playback_status_properties), "Playback Status Properties");
     gtk_window_set_type_hint (GTK_WINDOW (playback_status_properties), GDK_WINDOW_TYPE_HINT_DIALOG);
-    gtk_window_set_resizable (GTK_WINDOW (playback_status_properties), FALSE);
+    gtk_window_set_resizable (GTK_WINDOW (playback_status_properties), TRUE);
 
     config_dialog = gtk_dialog_get_content_area (GTK_DIALOG (playback_status_properties));
     gtk_widget_show (config_dialog);
@@ -201,13 +200,29 @@ on_button_config (GtkMenuItem *menuitem, gpointer user_data)
     g_signal_connect_after ((gpointer) num_lines, "value-changed", G_CALLBACK (on_num_lines_changed), user_data);
 
     for (int i = 0; i < MAX_LINES; i++) {
+        pango_attrs[i] = gtk_entry_new ();
         format[i] = gtk_entry_new ();
         if (i < CONFIG_NUM_LINES) {
+            gtk_widget_show (pango_attrs[i]);
             gtk_widget_show (format[i]);
         }
+
+        gtk_entry_set_invisible_char (GTK_ENTRY (pango_attrs[i]), 8226);
         gtk_entry_set_invisible_char (GTK_ENTRY (format[i]), 8226);
+
+        gtk_entry_set_activates_default (GTK_ENTRY (pango_attrs[i]), TRUE);
         gtk_entry_set_activates_default (GTK_ENTRY (format[i]), TRUE);
-        gtk_box_pack_start (GTK_BOX (vbox01), format[i], FALSE, FALSE, 0);
+
+        hbox02 = gtk_hbox_new (TRUE, 8);
+        gtk_box_pack_start (GTK_BOX (vbox01), hbox02, TRUE, TRUE, 0);
+        gtk_widget_show (hbox02);
+
+        gtk_box_pack_start (GTK_BOX (hbox02), pango_attrs[i], FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (hbox02), format[i], FALSE, FALSE, 0);
+
+        if (CONFIG_PANGO_ATTRS [i]) {
+            gtk_entry_set_text (GTK_ENTRY (pango_attrs[i]), CONFIG_PANGO_ATTRS[i]);
+        }
         if (CONFIG_FORMAT [i]) {
             gtk_entry_set_text (GTK_ENTRY (format[i]), CONFIG_FORMAT[i]);
         }
@@ -238,6 +253,10 @@ on_button_config (GtkMenuItem *menuitem, gpointer user_data)
         if (response == GTK_RESPONSE_OK || response == GTK_RESPONSE_APPLY) {
             CONFIG_NUM_LINES = gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (num_lines));
             for (int i = 0; i < CONFIG_NUM_LINES; i++) {
+                if (CONFIG_PANGO_ATTRS[i])
+                    g_free ((gchar *)CONFIG_PANGO_ATTRS[i]);
+                CONFIG_PANGO_ATTRS[i] = strdup (gtk_entry_get_text (GTK_ENTRY (pango_attrs[i])));
+
                 if (CONFIG_FORMAT[i])
                     g_free ((gchar *)CONFIG_FORMAT[i]);
                 CONFIG_FORMAT[i] = strdup (gtk_entry_get_text (GTK_ENTRY (format[i])));
@@ -295,9 +314,12 @@ playback_status_set_label_text (gpointer user_data)
         };
 
         for (int i = 0; i < CONFIG_NUM_LINES; i++) {
-            playback_status_escape_tf (CONFIG_FORMAT[i], strlen(CONFIG_FORMAT[i]), format_escaped, sizeof(format_escaped));
             deadbeef->tf_eval (&ctx, w->bytecode[i], format_escaped, sizeof (format_escaped));
+
+            char *markup = g_markup_escape_text (format_escaped,-1); //TODO: There is no escape that does not allocate?
+            snprintf(format_escaped,sizeof(format_escaped),"<span %s>%s</span>",CONFIG_PANGO_ATTRS[i],markup);
             gtk_label_set_markup (GTK_LABEL (w->label[i]), format_escaped);
+            g_free (markup);
         }
         if (ctx.plt) {
             deadbeef->plt_unref (ctx.plt);
@@ -306,8 +328,7 @@ playback_status_set_label_text (gpointer user_data)
         deadbeef->pl_item_unref (playing);
     }
     else {
-        gtk_label_set_markup (GTK_LABEL (w->label[0]), "<span weight='bold' size='x-large'>Stopped</span>");
-        for (int i = 1; i < CONFIG_NUM_LINES; i++) {
+        for (int i = 0; i < CONFIG_NUM_LINES; i++) {
             gtk_label_set_markup (GTK_LABEL (w->label[i]), "");
         }
     }
@@ -381,13 +402,11 @@ playback_status_message (ddb_gtkui_widget_t *widget, uint32_t id, uintptr_t ctx,
 static void
 w_playback_status_init (ddb_gtkui_widget_t *w) {
     w_playback_status_t *s = (w_playback_status_t *)w;
-    char format_escaped[1024];
     load_config (w);
     for (int i = 0; i < MAX_LINES; i++) {
         if (i < CONFIG_NUM_LINES) {
             gtk_widget_show (s->label[i]);
-            playback_status_escape_tf (CONFIG_FORMAT[i], strlen(CONFIG_FORMAT[i]), format_escaped, sizeof(format_escaped));
-            s->bytecode[i] = deadbeef->tf_compile (format_escaped);
+            s->bytecode[i] = deadbeef->tf_compile (CONFIG_FORMAT[i]);
         }
         else {
             gtk_widget_hide (s->label[i]);
@@ -414,6 +433,10 @@ w_playback_status_create (void) {
     for (int i = 0; i < MAX_LINES; ++i) {
         w->label[i] = gtk_label_new (NULL);
         gtk_label_set_ellipsize (GTK_LABEL (w->label[i]), PANGO_ELLIPSIZE_END);
+        #if GTK_CHECK_VERSION(3,0,0)
+        gtk_label_set_xalign (GTK_LABEL (w->label[i]), 0.0f);
+        #endif
+
         gtk_box_pack_start (GTK_BOX (vbox), w->label[i], FALSE, FALSE, 0);
         gtk_widget_show (w->label[i]);
     }
